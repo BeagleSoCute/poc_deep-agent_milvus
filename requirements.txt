@@ -1,0 +1,11 @@
+# Python 3.11+ (3.12 recommended)
+deepagents>=0.7.13,<0.8
+langgraph>=1.0,<2
+langchain-core>=1.6,<2
+langchain-openai>=1.0,<2
+pymilvus>=2.5,<3
+milvus-lite>=2.5
+setuptools<81          # milvus-lite still imports pkg_resources on some versions
+python-dotenv>=1.0
+tavily-python>=0.5     # optional: only used when TAVILY_API_KEY is set
+pytest>=8
