@@ -1,12 +1,16 @@
 # OPTIONAL: Milvus Standalone + Attu UI.
 # The PoC runs on Milvus Lite (a local file) by default. Attu cannot open a Milvus Lite
-# file, so use this only if the team wants to browse rows in Attu:
+# file, so use this when the team wants a Milvus server / Attu:
 #   docker compose up -d
 #   set MILVUS_DB_URI=http://localhost:19530 in .env
-#   open http://localhost:8000  (Attu; connect to milvus-standalone:19530)
+#   open http://localhost:8000  (Attu)
+# Port already in use? e.g. MILVUS_HOST_PORT=19531 ATTU_PORT=8001 docker compose up -d
+#   (then MILVUS_DB_URI=http://localhost:19531)
+#
+# Note: MinIO removed its images from Docker Hub, so minio is pulled from quay.io.
 services:
   etcd:
-    image: quay.io/coreos/etcd:v3.5.18
+    image: quay.io/coreos/etcd:v3.5.25
     environment:
       - ETCD_AUTO_COMPACTION_MODE=revision
       - ETCD_AUTO_COMPACTION_RETENTION=1000
@@ -14,16 +18,24 @@ services:
       - ETCD_SNAPSHOT_COUNT=50000
     volumes:
       - ./volumes/etcd:/etcd
-    command: etcd -advertise-client-urls=http://127.0.0.1:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    command: etcd -advertise-client-urls=http://etcd:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
 
   minio:
-    image: minio/minio:RELEASE.2024-12-18T13-15-44Z
+    image: quay.io/minio/minio:RELEASE.2024-05-28T17-19-04Z
     environment:
       MINIO_ACCESS_KEY: minioadmin
       MINIO_SECRET_KEY: minioadmin
+    ports:
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"   # MinIO console (optional)
     volumes:
       - ./volumes/minio:/minio_data
     command: minio server /minio_data --console-address ":9001"
+    # No healthcheck: the MinIO image has no curl; Milvus retries until MinIO is up.
 
   milvus-standalone:
     image: milvusdb/milvus:v2.6.17
@@ -35,15 +47,27 @@ services:
       MINIO_ADDRESS: minio:9000
     volumes:
       - ./volumes/milvus:/var/lib/milvus
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 30s
+      start_period: 90s
+      timeout: 20s
+      retries: 3
     ports:
-      - "19530:19530"
-      - "9091:9091"
-    depends_on: [etcd, minio]
+      - "${MILVUS_HOST_PORT:-19530}:19530"
+      # 9091 (health/metrics) stays inside Docker; the healthcheck uses it from within the container.
+    depends_on:
+      etcd:
+        condition: service_healthy
+      minio:
+        condition: service_started
 
   attu:
     image: zilliz/attu:latest
     environment:
       MILVUS_URL: milvus-standalone:19530
     ports:
-      - "8000:3000"
-    depends_on: [milvus-standalone]
+      - "${ATTU_PORT:-8000}:3000"
+    depends_on:
+      milvus-standalone:
+        condition: service_healthy
