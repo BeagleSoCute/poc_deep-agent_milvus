@@ -50,6 +50,82 @@ tool call ที่แตะ `/memories` จะเป็นสีเหลือ
 python -m scripts.inspect_memory --user earth [--full] [--stats] [--query "..."]
 ```
 
+## Checkpointer (short-term memory) บน Postgres
+
+| | Checkpointer | Store (Milvus) |
+|---|---|---|
+| เก็บ | state ทั้ง thread (messages, tool calls, ไฟล์นอก `/memories/`, todos) | ไฟล์ใต้ `/memories/` |
+| key | `thread_id` | namespace + path |
+| ข้าม thread | ไม่ | ได้ |
+
+ค่าเริ่มต้น `CHECKPOINTER=memory` (RAM หายเมื่อปิดโปรแกรม) เปลี่ยนเป็น Postgres:
+
+```bash
+docker compose up -d postgres                  # (ถ้า 5432 ชน: POSTGRES_HOST_PORT=5433 ... แล้วแก้ POSTGRES_URI)
+# .env
+CHECKPOINTER=postgres
+POSTGRES_URI=postgresql://agent:agent@localhost:5432/agent_checkpoints
+
+python -m scripts.check_env                    # checkpointer=postgres ... threads=N
+python -m app.cli --user earth                 # /thread, /threads, /history
+python -m app.cli --user earth --thread <id>   # กลับมาคุยต่อ thread เดิมหลังปิดโปรแกรม
+./scripts/demo_resume.sh                       # 2 process คุยต่อ thread เดียวกัน, thread ใหม่จำไม่ได้
+```
+
+Tests (ต้องมี Postgres):
+
+```bash
+POSTGRES_TEST_URI=postgresql://agent:agent@localhost:5432/agent_checkpoints python -m pytest tests/test_postgres_checkpointer.py -v
+```
+
+- thread อยู่รอดหลังเปิด connection pool ใหม่ และหลัง **process ลูกจบไปแล้ว**
+- thread แยกกัน แต่ memory ใน Milvus ใช้ร่วมกัน
+- `list_threads` กรองตาม user, `delete_thread` ลบได้
+- baseline: `InMemorySaver` ลืม thread เมื่อสร้าง instance ใหม่
+
+ใช้ในโค้ดของทีม: `with open_checkpointer() as cp: create_deep_agent(..., checkpointer=cp, **mem.agent_kwargs())`
+(แอป async/FastAPI ให้ใช้ `AsyncPostgresSaver`) — checkpoint เก็บทุก step ข้อมูลโตเร็ว ควรมีงานลบ thread เก่า
+
+## ต่อ Milvus ผ่าน URL เข้ากับ `create_deep_agent`
+
+ใช้ `app/milvus_memory.py` → `create_milvus_memory()` คืน `backend` + `store` + `memory` ให้ส่งเข้า `create_deep_agent` ได้เลย
+
+```python
+from app.milvus_memory import create_milvus_memory
+
+mem = create_milvus_memory(
+    uri="http://milvus.internal:19530",      # Milvus server / https://...zillizcloud.com / ./x.db (Lite)
+    token="root:Milvus",                     # หรือ user=..., password=...
+    db_name="agents",                        # optional, create_db=True เพื่อสร้างให้
+    collection_name="agent_memories",
+    embeddings=OpenAIEmbeddings(model="text-embedding-3-large", ...),
+    namespace=("my-agent", "user-123"),      # หรือ lambda rt: ("my-agent", rt.context["user_id"])
+)
+agent = create_deep_agent(model=..., tools=[...], system_prompt=..., **mem.agent_kwargs())
+```
+
+- ไฟล์ใต้ `/memories/` → 1 row ใน Milvus, ไฟล์อื่นอยู่ใน state ของ thread
+- namespace แบบคงที่ = 1 agent ต่อ 1 user; แบบ `lambda rt:` = agent เดียวหลาย user (ส่ง `context={"user_id": ...}` ตอน invoke + `context_schema`)
+- ตัวอย่างเต็ม: `examples/team_agent.py`
+
+### เปลี่ยนทั้งโปรเจกต์ไปใช้ server — แก้แค่ `.env`
+
+```
+MILVUS_DB_URI=http://<host>:19530
+MILVUS_DB_TOKEN=root:Milvus        # ถ้าเปิด auth
+MILVUS_DB_NAME=agents              # ถ้าไม่ใช้ default
+MILVUS_DB_CREATE=true              # ให้สร้าง database ถ้ายังไม่มี
+```
+
+```bash
+python -m scripts.check_env                       # จะแสดง mode=server, version, databases, collections
+python -m examples.team_agent                     # remember → recall → แสดง row ใน Milvus
+MILVUS_TEST_URI=http://<host>:19530 MILVUS_TEST_TOKEN=root:Milvus python -m pytest   # test ทั้งชุดกับ server
+```
+
+test บน server สร้าง collection `mem_test_*` ชั่วคราวแล้ว drop ทิ้งเอง
+ถ้าเปลี่ยน embedding model (dimension เปลี่ยน) ต้องใช้ `MILVUS_COLLECTION` ใหม่
+
 ## Tests
 
 ```bash
@@ -94,8 +170,11 @@ RUN_LIVE=1 python -m pytest -m live -s   # end-to-end กับ LLM จริง
 app/config.py         settings จาก .env
 app/embeddings.py     OpenAI-compatible หรือ hash embeddings
 app/milvus_store.py   MilvusStore(BaseStore)  ← หัวใจ
+app/milvus_memory.py  create_milvus_memory() ← ใช้ต่อกับ create_deep_agent
+examples/team_agent.py ตัวอย่างต่อ Milvus URL
 app/tools.py          internet_search (Tavily/mock), search_memories (vector search)
 app/agent.py          build_agent(): CompositeBackend + StoreBackend + create_deep_agent
+app/checkpointer.py   open_checkpointer(): memory | postgres
 app/cli.py            chat CLI
 scripts/              check_env, inspect_memory, ask (1 คำถาม = 1 process), demo.sh
 tests/                T1–T11 + live
@@ -110,6 +189,6 @@ tests/                T1–T11 + live
 ## ข้อจำกัดที่รู้อยู่
 
 - ยังไม่ได้รันจริงตอนเขียน (sandbox ไม่มี PyPI) — เขียนตาม source ของ deepagents 0.7.13 / langgraph store API
-- Milvus Lite: เปิดได้ทีละ process, ไม่รองรับ Attu, ไม่รองรับ Windows
+- Milvus Lite: เปิดได้ทีละ process, ไม่รองรับ Attu, ไม่รองรับ Windows (ใช้ server URL แทนได้)
 - ทั้งไฟล์ = 1 vector; `value` JSON จำกัด ~64KB ต่อไฟล์
 - ไม่รองรับ TTL

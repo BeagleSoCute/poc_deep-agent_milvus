@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import threading
 from collections.abc import Iterable
 from datetime import datetime, timezone
@@ -41,6 +42,10 @@ from langgraph.store.base import (
     get_text_at_path,
 )
 from pymilvus import DataType, MilvusClient
+
+# Milvus Lite runs an in-process gRPC server that logs "Method not implemented" for calls newer
+# pymilvus clients probe (e.g. AllocTimestamp). Harmless; keep it out of test/CLI output.
+logging.getLogger("grpc._server").setLevel(logging.CRITICAL)
 
 NS_SEP = "."
 MAX_QUERY_WINDOW = 16384  # Milvus limit for offset + limit
@@ -148,13 +153,50 @@ class MilvusStore(BaseStore):
         embeddings: Embeddings,
         collection_name: str = "agent_memories",
         token: str | None = None,
+        user: str | None = None,
+        password: str | None = None,
+        db_name: str | None = None,
+        create_db: bool = False,
+        timeout: float | None = 10.0,
         index_fields: list[str] | None = None,
     ) -> None:
+        """
+        Args:
+            uri: Milvus Lite file path (``./data/memory.db``) or server URL
+                (``http://host:19530``, ``https://xxx.zillizcloud.com``).
+            token: ``"user:password"`` for a Milvus server with auth, or a Zilliz Cloud API key.
+            user / password: alternative to ``token``.
+            db_name: Milvus database (server only). ``None`` -> ``default``.
+            create_db: create ``db_name`` if it does not exist.
+        """
         self.uri = uri
+        self.db_name = db_name or "default"
         self.embeddings = embeddings
         self.collection_name = collection_name
         self.index_fields = index_fields  # None -> embed value["content"]
-        self.client = MilvusClient(uri=uri, token=token or "")
+        is_server = uri.startswith(("http://", "https://", "tcp://", "grpc://"))
+        auth = dict(uri=uri, token=token or "", user=user or "", password=password or "", timeout=timeout)
+        use_db = bool(is_server and db_name and db_name != "default")
+        try:
+            if use_db:
+                admin = MilvusClient(**auth)
+                existing = admin.list_databases()
+                if db_name not in existing:
+                    if not create_db:
+                        admin.close()
+                        raise ValueError(
+                            f"Milvus database {db_name!r} not found (have: {existing}). "
+                            "Create it or set create_db=True / MILVUS_DB_CREATE=true."
+                        )
+                    admin.create_database(db_name)
+                admin.close()
+            self.client = MilvusClient(**auth, db_name=db_name if use_db else "")
+        except ValueError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            raise ConnectionError(f"Cannot connect to Milvus at {uri!r} (db={self.db_name}): {e}") from e
+        if not is_server:
+            self.db_name = "(milvus-lite)"
         self._lock = threading.RLock()
         self.dim = self._ensure_collection()
 
@@ -200,6 +242,12 @@ class MilvusStore(BaseStore):
         )
         c.load_collection(self.collection_name)
         return dim
+
+    def drop_collection(self) -> None:
+        """Delete the whole collection (tests / cleanup)."""
+        with self._lock:
+            if self.client.has_collection(self.collection_name):
+                self.client.drop_collection(self.collection_name)
 
     def close(self) -> None:
         try:

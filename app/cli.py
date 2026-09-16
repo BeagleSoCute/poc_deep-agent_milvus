@@ -7,6 +7,9 @@ Slash commands:
     /show <path>      full content of one memory, e.g. /show /AGENTS.md
     /search <text>    vector search in Milvus
     /new              start a new thread (= new session, empty short-term state)
+    /thread [id]      show current thread id, or switch to (resume) another thread
+    /threads          threads of this user saved by the checkpointer
+    /history          messages stored in the checkpoint of the current thread
     /reset            delete this user's memories in Milvus (negative-control demo)
     /exit
 """
@@ -19,6 +22,7 @@ import uuid
 from langchain_core.messages import AIMessage, ToolMessage
 
 from app.agent import build_agent, make_store, reset_memory
+from app.checkpointer import list_threads, open_checkpointer, redact, thread_config
 
 DIM, BOLD, CYAN, GREEN, YELLOW, RESET = "\033[2m", "\033[1m", "\033[36m", "\033[32m", "\033[33m", "\033[0m"
 
@@ -57,19 +61,34 @@ def print_turn(new_messages) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
     from app.config import settings
 
+    parser = argparse.ArgumentParser()
     parser.add_argument("--user", default=settings.default_user_id)
     parser.add_argument("--thread", default=None)
     args = parser.parse_args()
 
     store = make_store()
-    agent = build_agent(args.user, store)
-    thread = args.thread or uuid.uuid4().hex[:8]
-    print(f"{BOLD}Deep Agent + Milvus memory PoC{RESET}  user={args.user}  thread={thread}")
-    print(f"{DIM}Type /mem, /show, /search, /new, /reset, /exit{RESET}\n")
+    with open_checkpointer() as checkpointer:
+        agent = build_agent(args.user, store, checkpointer=checkpointer)
+        where = "RAM (lost on exit)" if settings.checkpointer == "memory" else redact(settings.postgres_uri)
+        print(f"{BOLD}Deep Agent + Milvus memory PoC{RESET}  user={args.user}")
+        print(f"{DIM}long-term memory : Milvus {store.uri} / {store.collection_name}{RESET}")
+        print(f"{DIM}checkpointer     : {settings.checkpointer} -> {where}{RESET}")
+        thread = args.thread or uuid.uuid4().hex[:8]
+        _announce_thread(agent, thread, args.user)
+        print(f"{DIM}Type /mem, /show, /search, /new, /thread, /threads, /history, /reset, /exit{RESET}\n")
+        _loop(agent, store, checkpointer, thread, args.user)
+    store.close()
 
+
+def _announce_thread(agent, thread: str, user: str) -> None:
+    n = len(agent.graph.get_state(thread_config(thread, user)).values.get("messages", []))
+    state = f"resuming, {n} message(s) in checkpoint" if n else "new"
+    print(f"{GREEN}thread={thread} ({state}){RESET}")
+
+
+def _loop(agent, store, checkpointer, thread: str, user: str) -> None:
     while True:
         try:
             line = input(f"{BOLD}you>{RESET} ").strip()
@@ -96,17 +115,38 @@ def main() -> None:
             thread = uuid.uuid4().hex[:8]
             print(f"{GREEN}new thread {thread} (short-term state is empty; only Milvus remembers){RESET}")
             continue
+        if line.startswith("/thread") and not line.startswith("/threads"):
+            parts = line.split()
+            if len(parts) > 1:
+                thread = parts[1]
+                _announce_thread(agent, thread, user)
+            else:
+                print(f"thread={thread}   (resume later: python -m app.cli --user {user} --thread {thread})")
+            continue
+        if line == "/threads":
+            rows = list_threads(checkpointer, agent.graph, user)
+            if not rows:
+                print("(no saved threads for this user)")
+            for tid, n, text in rows:
+                mark = "*" if tid == thread else " "
+                print(f" {mark} {tid}  {n:>3} msgs  last: {text!r}")
+            continue
+        if line == "/history":
+            msgs = agent.graph.get_state(thread_config(thread, user)).values.get("messages", [])
+            print(f"{GREEN}{len(msgs)} message(s) in checkpoint of thread {thread}{RESET}")
+            for m in msgs:
+                label = m.type if not getattr(m, "tool_calls", None) else f"ai→{[t['name'] for t in m.tool_calls]}"
+                print(f"  {label:<14} {_text(m).replace(chr(10), ' ')[:100]}")
+            continue
         if line == "/reset":
             n = reset_memory(store, agent.namespace)
             print(f"{GREEN}deleted {n} row(s) from Milvus and re-seeded AGENTS.md{RESET}")
             continue
 
-        config = {"configurable": {"thread_id": thread}}
+        config = thread_config(thread, user)
         before = agent.graph.get_state(config).values.get("messages", [])
         result = agent.graph.invoke({"messages": [{"role": "user", "content": line}]}, config=config)
         print_turn(result["messages"][len(before) :])
-
-    store.close()
 
 
 if __name__ == "__main__":

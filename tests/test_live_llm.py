@@ -29,8 +29,9 @@ def ask(store, question: str) -> str:
     return content if isinstance(content, str) else str(content)
 
 
-def test_live_remember_recall_and_forget(db_path):
-    store = MilvusStore(uri=db_path, embeddings=make_embeddings(), collection_name="live_test")
+def test_live_remember_recall_and_forget(milvus_uri, milvus_kwargs):
+    store = MilvusStore(uri=milvus_uri, embeddings=make_embeddings(),
+                        collection_name=f"live_test_{uuid.uuid4().hex[:6]}", **milvus_kwargs)
     ns = ("poc-agent", "live-user")
     try:
         before = store.count(ns)
@@ -52,4 +53,5 @@ def test_live_remember_recall_and_forget(db_path):
         print("session C (after wipe):", answer)
         assert SECRET not in answer
     finally:
+        store.drop_collection()
         store.close()

@@ -8,4 +8,6 @@ milvus-lite>=2.5
 setuptools<81          # milvus-lite still imports pkg_resources on some versions
 python-dotenv>=1.0
 tavily-python>=0.5     # optional: only used when TAVILY_API_KEY is set
+langgraph-checkpoint-postgres>=3.0   # CHECKPOINTER=postgres
+psycopg[binary,pool]>=3.2
 pytest>=8

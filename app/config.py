@@ -33,13 +33,37 @@ class Settings:
     embedding_model: str = _env("EMBEDDING_MODEL", "text-embedding-3-large")
 
     milvus_uri: str = _env("MILVUS_DB_URI", "./data/milvus_memory.db")
-    milvus_token: str = _env("MILVUS_DB_TOKEN")
+    milvus_token: str = _env("MILVUS_DB_TOKEN")  # "user:password" or Zilliz Cloud API key
+    milvus_user: str = _env("MILVUS_DB_USER")
+    milvus_password: str = _env("MILVUS_DB_PASSWORD")
+    milvus_db_name: str = _env("MILVUS_DB_NAME")  # server only; empty -> "default"
+    milvus_db_create: bool = _env("MILVUS_DB_CREATE", "false").lower() in ("1", "true", "yes")
     milvus_collection: str = _env("MILVUS_COLLECTION", "agent_memories")
 
     agent_namespace: str = _env("AGENT_NAMESPACE", "poc-agent")
     default_user_id: str = _env("DEFAULT_USER_ID", "earth")
 
     tavily_api_key: str = _env("TAVILY_API_KEY")
+
+    # Short-term memory (thread state): "memory" (RAM, lost on exit) or "postgres"
+    checkpointer: str = _env("CHECKPOINTER", "memory").lower()
+    postgres_uri: str = _env("POSTGRES_URI", "postgresql://agent:agent@localhost:5432/agent_checkpoints")
+
+    @property
+    def is_milvus_server(self) -> bool:
+        return self.milvus_uri.startswith(("http://", "https://", "tcp://", "grpc://"))
+
+    def milvus_client_kwargs(self) -> dict:
+        """kwargs for pymilvus.MilvusClient (used by scripts that bypass MilvusStore)."""
+        kw = {
+            "uri": self.resolved_milvus_uri,
+            "token": self.milvus_token,
+            "user": self.milvus_user,
+            "password": self.milvus_password,
+        }
+        if self.is_milvus_server and self.milvus_db_name:
+            kw["db_name"] = self.milvus_db_name
+        return kw
 
     @property
     def resolved_milvus_uri(self) -> str:

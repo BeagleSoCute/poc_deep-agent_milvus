@@ -6,24 +6,18 @@ from dataclasses import dataclass
 from typing import Any
 
 from deepagents import create_deep_agent
-from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
+from deepagents.backends import CompositeBackend, StoreBackend
 from langchain_core.language_models import BaseChatModel
 from langgraph.checkpoint.memory import InMemorySaver
 
 from app.config import settings
 from app.embeddings import make_embeddings
+from app.milvus_memory import DEFAULT_AGENTS_MD, create_milvus_memory
 from app.milvus_store import MilvusStore
 from app.tools import internet_search, make_memory_search_tool
 
 MEMORY_ROUTE = "/memories/"
 AGENTS_MD_KEY = "/AGENTS.md"  # CompositeBackend strips "/memories" before it reaches the store
-
-DEFAULT_AGENTS_MD = """# Long-term memory about the user
-(The agent keeps this file up to date. It is loaded at the start of every session.)
-
-## User profile & preferences
-- (nothing yet)
-"""
 
 SYSTEM_PROMPT = """You are a research assistant with long-term memory.
 
@@ -40,6 +34,7 @@ Rules:
    /memories/ (ls, read_file) or use search_memories before answering.
 4. Never claim you remembered something unless it is in /memories/.
 5. Use scratch files (e.g. /scratch/...) only for temporary notes.
+6. If the user asks you to remember recipes, notes, or any facts, save it to a new file in /memories/
 """
 
 
@@ -60,6 +55,10 @@ def make_store(**overrides: Any) -> MilvusStore:
     kwargs: dict[str, Any] = dict(
         uri=settings.resolved_milvus_uri,
         token=settings.milvus_token or None,
+        user=settings.milvus_user or None,
+        password=settings.milvus_password or None,
+        db_name=settings.milvus_db_name or None,
+        create_db=settings.milvus_db_create,
         collection_name=settings.milvus_collection,
         embeddings=make_embeddings(),
     )
@@ -116,10 +115,9 @@ def build_agent(
     checkpointer: Any | None = None,
 ) -> MemoryAgent:
     namespace = user_namespace(user_id)
-    seed_memory(store, namespace)
-
-    mem = memory_backend(store, namespace)
-    backend = CompositeBackend(default=StateBackend(), routes={MEMORY_ROUTE: mem})
+    mem = create_milvus_memory(
+        uri=store.uri, embeddings=store.embeddings, namespace=namespace, store=store, route=MEMORY_ROUTE
+    )
 
     if tools is None:
         tools = [internet_search, make_memory_search_tool(store, namespace)]
@@ -128,10 +126,10 @@ def build_agent(
         model=model or make_chat_model(),
         tools=tools,
         system_prompt=SYSTEM_PROMPT,
-        memory=[MEMORY_ROUTE + AGENTS_MD_KEY.lstrip("/")],  # "/memories/AGENTS.md"
-        backend=backend,
-        store=store,  # the blog passed InMemoryStore() here by mistake
+        **mem.agent_kwargs(),  # backend + store (Milvus; the blog passed InMemoryStore() by mistake) + memory
         checkpointer=checkpointer or InMemorySaver(),
         name="milvus-memory-poc",
     )
-    return MemoryAgent(graph=graph, store=store, namespace=namespace, backend=backend, memory_backend=mem)
+    return MemoryAgent(
+        graph=graph, store=store, namespace=namespace, backend=mem.backend, memory_backend=mem.memory_backend
+    )

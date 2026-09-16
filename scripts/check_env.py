@@ -46,10 +46,39 @@ def check_embeddings():
 def check_milvus():
     from pymilvus import MilvusClient
 
-    client = MilvusClient(uri=settings.resolved_milvus_uri, token=settings.milvus_token or "")
+    uri = settings.resolved_milvus_uri
+    if not settings.is_milvus_server:
+        client = MilvusClient(uri=uri)
+        cols = client.list_collections()
+        client.close()
+        return f"mode=milvus-lite uri={uri} collections={cols}"
+
+    kw = settings.milvus_client_kwargs()
+    kw.pop("db_name", None)
+    client = MilvusClient(**kw, timeout=10)
+    info = f"mode=server uri={uri} version={client.get_server_version()} databases={client.list_databases()}"
+    db = settings.milvus_db_name or "default"
+    if db != "default" and db not in client.list_databases():
+        client.close()
+        hint = "set MILVUS_DB_CREATE=true to create it" if not settings.milvus_db_create else "will be created on first use"
+        return f"{info}\n       database {db!r} does not exist yet ({hint})"
+    client.close()
+    client = MilvusClient(**settings.milvus_client_kwargs(), timeout=10)
     cols = client.list_collections()
     client.close()
-    return f"uri={settings.resolved_milvus_uri} collections={cols}"
+    return f"{info}\n       db={db} collections={cols}"
+
+
+def check_checkpointer():
+    from app.checkpointer import open_checkpointer, redact
+
+    with open_checkpointer() as cp:
+        if settings.checkpointer == "memory":
+            return "checkpointer=memory (RAM only; set CHECKPOINTER=postgres to persist threads)"
+        with cp.conn.connection() as conn:
+            version = conn.execute("select version()").fetchone()["version"].split(",")[0]
+            n = conn.execute("select count(distinct thread_id) as n from checkpoints").fetchone()["n"]
+        return f"checkpointer=postgres {redact(settings.postgres_uri)}  {version}  threads={n}"
 
 
 if __name__ == "__main__":
@@ -59,6 +88,7 @@ if __name__ == "__main__":
         step("chat completion", check_llm),
         step("embeddings", check_embeddings),
         step("milvus connection", check_milvus),
+        step("checkpointer", check_checkpointer),
     ]
     if not results[2]:
         print("\nTip: if the endpoint has no embedding model, set EMBEDDING_PROVIDER=hash in .env "

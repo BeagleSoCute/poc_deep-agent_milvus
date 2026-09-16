@@ -26,8 +26,8 @@ def main() -> None:
     a = p.parse_args()
 
     uri, col = settings.resolved_milvus_uri, settings.milvus_collection
-    client = MilvusClient(uri=uri, token=settings.milvus_token or "")
-    print(f"uri={uri}\ncollection={col}  exists={client.has_collection(col)}")
+    client = MilvusClient(**settings.milvus_client_kwargs())
+    print(f"uri={uri}  db={settings.milvus_db_name or 'default'}\ncollection={col}  exists={client.has_collection(col)}")
     if not client.has_collection(col):
         return
     client.load_collection(col)

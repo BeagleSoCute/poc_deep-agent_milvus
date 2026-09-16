@@ -4,8 +4,9 @@
 #   docker compose up -d
 #   set MILVUS_DB_URI=http://localhost:19530 in .env
 #   open http://localhost:8000  (Attu)
-# Port already in use? e.g. MILVUS_HOST_PORT=19531 ATTU_PORT=8001 docker compose up -d
-#   (then MILVUS_DB_URI=http://localhost:19531)
+# Port already in use? e.g. MILVUS_HOST_PORT=19531 ATTU_PORT=8001 POSTGRES_HOST_PORT=5433 docker compose up -d
+#   (then MILVUS_DB_URI=http://localhost:19531, POSTGRES_URI=...@localhost:5433/...)
+# Only Postgres (checkpointer) while keeping Milvus Lite: docker compose up -d postgres
 #
 # Note: MinIO removed its images from Docker Hub, so minio is pulled from quay.io.
 services:
@@ -61,6 +62,23 @@ services:
         condition: service_healthy
       minio:
         condition: service_started
+
+  postgres:
+    # Checkpointer storage (CHECKPOINTER=postgres). Start alone with: docker compose up -d postgres
+    image: postgres:16
+    environment:
+      POSTGRES_USER: agent
+      POSTGRES_PASSWORD: agent
+      POSTGRES_DB: agent_checkpoints
+    ports:
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
+    volumes:
+      - ./volumes/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agent -d agent_checkpoints"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
 
   attu:
     image: zilliz/attu:latest
