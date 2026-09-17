@@ -204,16 +204,16 @@ flowchart TD
     User([🙋‍♂️ User พิมพ์ข้อความ]) --> Agent{🤖 AI Agent อ่านกฎ<br>System Prompt}
     
     %% กรณี 1
-    Agent -->|เคส 1: "ช่วยคำนวณ ภาษี ให้หน่อย" <br>(ใช้งานทั่วไป/คุยเล่น)| P1[💬 ประมวลผลและตอบกลับเลย]
+    Agent -->|เคส 1: 'ช่วยคำนวณ ภาษี ให้หน่อย' <br>(ใช้งานทั่วไป/คุยเล่น)| P1[💬 ประมวลผลและตอบกลับเลย]
     P1 -->|Auto Save| Postgres[(🐘 Postgres<br>เก็บ Log แชท)]
     
     %% กรณี 2
-    Agent -->|เคส 2: "เราชอบฟังเพลงแนว Jazz นะ" <br>(ข้อมูลส่วนตัวสำคัญ)| M1[📝 หยิบเครื่องมือ edit_file<br>เขียนลง /memories/AGENTS.md]
+    Agent -->|เคส 2: 'เราชอบฟังเพลงแนว Jazz นะ' <br>(ข้อมูลส่วนตัวสำคัญ)| M1[📝 หยิบเครื่องมือ edit_file<br>เขียนลง /memories/AGENTS.md]
     M1 -->|Routing| Milvus[(🐳 Milvus<br>เก็บ Profile ถาวร)]
     M1 -->|Auto Save Log แชท| Postgres
     
     %% กรณี 3
-    Agent -->|เคส 3: "สรุปข่าว AI แล้วเซฟเก็บไว้ให้ที" <br>(สั่งให้จด/Research)| M2[📝 หยิบเครื่องมือ write_file<br>เขียนลง /memories/research/ai.md]
+    Agent -->|เคส 3: 'สรุปข่าว AI แล้วเซฟเก็บไว้ให้ที' <br>(สั่งให้จด/Research)| M2[📝 หยิบเครื่องมือ write_file<br>เขียนลง /memories/research/ai.md]
     M2 -->|Routing| Milvus
     M2 -->|Auto Save Log แชท| Postgres
 
